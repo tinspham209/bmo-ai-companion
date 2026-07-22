@@ -1,0 +1,15 @@
+[Unit]
+Description=BMO Face Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/bmo-ai-companion/services/bmo-face
+ExecStart=/opt/bmo-ai-companion/services/bmo-face/.venv/bin/python main.py
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,10 @@
+face:
+  fps_target: 30
+  fps_fallback: 24
+  fullscreen: true
+  resolution: auto
+  sleep_timeout_seconds: 300
+  mqtt_broker: localhost
+  mqtt_port: 1883
+  api_port: 5200
+
