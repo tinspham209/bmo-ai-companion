@@ -1,8 +1,9 @@
 # Milestone 2 — Face Engine Plan
 
-**Status:** In Progress — visual core complete, device validation pending
+**Status:** In progress — software implementation is ready for target validation; device checks are pending
 **Priority:** 1 (first to implement)
 **Ref spec:** `docs/2026-07-22-01-bmo-ai-companion-specs.md § Milestone 2`
+**macOS verification (2026-09-28):** install script completed; Homebrew Mosquitto is running on loopback and pub/sub passed; local headless service health and MQTT state control passed; 39 automated tests passed. Playbox/display acceptance, target-broker restart, and one-hour device memory profiling remain pending.
 
 ---
 
@@ -124,11 +125,11 @@ BOOT → IDLE ←→ BLINK (overlay, independent)
 ### Blink sub-state
 - Runs **independently** as an overlay on top of any non-SLEEP state
 - Random interval: 3–6 seconds
-- Duration: 150ms (ease-in/out)
+- Duration: 200ms (75ms close, 50ms hold, 75ms open)
 
 ### State Priority Ladder
 
-Higher priority states interrupt lower ones. During SPEAKING/THINKING, low-priority events are **coalesced** (keep latest relevant event) to avoid backlog.
+Higher priority states interrupt lower ones. During SPEAKING/THINKING/LISTENING, lower-priority events are **coalesced** (keep the latest event per topic) to avoid backlog. ALERT holds priority over lower-priority events; `bmo/face/set_state` bypasses coalescing.
 
 | Priority    | States                                                                  | Rule                                   |
 | ----------- | ----------------------------------------------------------------------- | -------------------------------------- |
@@ -193,8 +194,8 @@ Higher priority states interrupt lower ones. During SPEAKING/THINKING, low-prior
 - Triggered by `bmo/voice/listening_start`; auto-expires after 10s → `IDLE`
 
 ### `SPEAKING`
-- Mouth animates as oval: height oscillates 8 Hz (base 5, dynamic 16 px)
-- Always uses 8 Hz fallback; amplitude envelope consumed when provided
+- Mouth animates as oval using the supplied amplitude envelope when valid
+- Falls back to 8 Hz oscillation when the envelope is absent or empty
 - Eyes stay in current position
 - Exits via `bmo/ai/speaking_end` or `set_state`; if set via `set_state`, 15s safety timeout
 
@@ -233,14 +234,14 @@ Higher priority states interrupt lower ones. During SPEAKING/THINKING, low-prior
 - Hold **5s** → `IDLE` (or resumes `SPEAKING` if interrupted)
 
 ### `SLEEP`
-- Dim overlay (alpha 170)
-- Eyes fully closed (blink_active_until held), pupils not drawn
+- Dim overlay fades to alpha 180 over 2s
+- Eyes half-close and pupils are hidden
 - Floating "z z z" glyphs in top-right of screen panel
-- Glow pulse disabled
+- Subdued glow and eye breathing use an 8s cycle
 
 ### `WAKE`
-- Dim overlay removed
-- Eyes open fully (spring ease-out)
+- Dim overlay fades out over 1s
+- Eyes open fully and pupils pop upward
 - Transition to `IDLE` after 1s
 
 ---
@@ -256,7 +257,7 @@ Interface between `bmo-ai` (M6) / `bmo-voice` (M5) and `bmo-face` (M2) for SPEAK
 }
 ```
 
-- `amplitude`: floats `0.0–1.0` — mouth open height = `scale(8) + amplitude[i] * scale(20)`
+- `amplitude`: floats `0.0–1.0` — mouth open height = `scale(5) + amplitude[i] * scale(16)`
 - `sample_rate_hz`: samples consumed per second by bmo-face (default: 10)
 - **If field absent or empty:** fall back to fixed 8 Hz open/close oscillation
 
@@ -278,6 +279,7 @@ Interface between `bmo-ai` (M6) / `bmo-voice` (M5) and `bmo-face` (M2) for SPEAK
 | `bmo/notify/event`           | `{"title":"...","message":"...","priority":"low|medium|high"}`         | `priority=high` → `ALERT` (5s, shows title+msg) |
 | `bmo/voice/bt_disconnect`    | `{}`                                                                    | → `SAD`                                 |
 | `bmo/face/set_state`         | `{"state": "<state_name>"}`                                             | Direct override (priority 6, always wins; invalid names ignored) |
+| `bmo/face/brightness`        | `{"level": 0.0–1.0}`                                                    | Set display brightness                  |
 
 ## MQTT Topics (Publish)
 
@@ -330,10 +332,10 @@ face:
 - [x] Add baseline `config/bmo.yaml` face section
 
 #### Phase 2 — Animation Core
-- [x] Add `services/bmo-face/face/animations.py` for IDLE glow, breathing, speaking fallback waveform
-- [x] Add blink scheduler/timer in `services/bmo-face/face/state_machine.py`
-- [x] Add BOOT completion transition and ready publish event
-- [x] Add SLEEP/WAKE transition timing logic in state machine
+- [x] Add `services/bmo-face/face/animations.py` for IDLE/SLEEP glow, breathing, amplitude sampling, and speaking fallback
+- [x] Add independent blink scheduler and animated eyelid timing in `services/bmo-face/face/state_machine.py`
+- [x] Add BOOT flicker/eye/mouth sequence, completion transition, and ready publish event
+- [x] Add SLEEP/WAKE timing with dim/undim progression
 
 #### Phase 3 — Reactive States
 - [x] Add LOOK_LEFT/LOOK_RIGHT mapping from `bmo/camera/face_position`
@@ -345,26 +347,26 @@ face:
 
 #### Phase 4 — State Machine
 - [x] Implement `FaceState` enum and `FaceStateMachine` core
-- [x] Implement priority ladder + coalescing for low-priority events during THINKING/SPEAKING
+- [x] Implement priority ladder + coalescing for lower-priority events during THINKING/LISTENING/SPEAKING/ALERT
 - [x] Implement sleep timeout + cancellation
 - [x] Implement transient timeout exits and alert exit rule
 
 #### Phase 5 — Integration
-- [x] Create `services/bmo-face/mqtt_client.py` with subscribe list + reconnect policy
+- [x] Create `services/bmo-face/mqtt_client.py` with complete subscriptions, payload checks, and reconnect policy
 - [x] Create `services/bmo-face/api.py` with `/health`, `/state`, `/brightness`
 - [x] Create `services/bmo-face/main.py` wiring runtime + mqtt + api
-- [x] Add signal handler in `renderer.py` for graceful process stop
+- [x] Add signal handler, fade-to-black, pygame cleanup, and joined API/MQTT shutdown
 
 #### Phase 6 — Ops
 - [x] Create `services/bmo-face/systemd/bmo-face.service`
-- [x] Create `scripts/install-face.sh`
+- [x] Create `scripts/install-face.sh` for virtual environment and dependency setup
 - [ ] Device smoke test execution on S905X
 - [ ] 1h memory profile execution on S905X
 
 ### Phase 1 — Foundation
 
 - [ ] **T0** Install Mosquitto MQTT broker, enable service, and verify local pub/sub health
-- [ ] **T0b** Benchmark pygame-ce renderer on S905X; keep target 30 FPS and set fallback 24 FPS only if benchmark cannot sustain target
+- [ ] **T0b** Benchmark pygame-ce renderer on S905X; verify automatic fallback when measured FPS stays below 80% of target for 2 seconds
 - [x] **T1** Set up `services/bmo-face/` project skeleton (venv, requirements.txt, config loader)
 - [x] **T2** Scaffold pygame-ce window: fullscreen, `pygame.SCALED` flag, auto-detect resolution, FPS loop with fallback
 - [x] **T3** Define color palette constants + `scale()` helper in `face/colors.py`
@@ -374,16 +376,16 @@ face:
 
 - [x] **T5** Implement `IDLE` state: glow pulse (sine wave) + breathing pupils
 - [x] **T6** Implement `BLINK` overlay: independent timer, eyelid sweep
-- [ ] **T7** Implement `BOOT` startup sequence (flicker → eyes open → mouth fade)
+- [x] **T7** Implement `BOOT` startup sequence (flicker → eyes open → mouth fade)
 - [x] **T8** Implement `SLEEP` state: dim overlay + half-close eyes + slow pulse
-- [ ] **T9** Implement `WAKE` state: reverse dim + spring pop → IDLE
+- [x] **T9** Implement `WAKE` state: reverse dim + pupil pop → IDLE
 
 ### Phase 3 — Reactive States
 
 - [x] **T10** Implement `LOOK_LEFT` / `LOOK_RIGHT`: pupil translation + auto-return 500ms after last event
 - [x] **T11** Implement `HAPPY` state: mouth arc + eye squint + 3s timeout
 - [x] **T12** Implement `SAD` state: downward mouth arc + blue tint + 4s timeout
-- [x] **T13** Implement `STRESSED` state: pupil jitter + mouth tighten + screen shake + 5s timeout
+- [x] **T13** Implement `STRESSED` state: jittering X eyes + red tint + screen shake + 5s timeout
 - [x] **T14** Implement `HOT` state: red tint overlay + sweat drop + eye squint + 5s timeout
 - [x] **T15** Implement `WORRIED` state: inverted-V brows + eye dart + 5s timeout
 - [x] **T16** Implement `ALERT` state: wide eyes + flashing border + `!` icon + **notification text box** (title + message) + return to IDLE (or resume SPEAKING if interrupted)
@@ -394,22 +396,22 @@ face:
 
 - [x] **T19** Implement `StateMachine` class: states, transitions, event dispatch
 - [x] **T20** Wire all 15 animation states (including LISTENING) into state machine with correct transitions
-- [x] **T21** Implement state priority ladder: higher priority interrupts lower; coalesce/drop stale low-priority events during SPEAKING/THINKING
+- [x] **T21** Implement state priority ladder: higher priority interrupts lower; coalesce lower-priority events during active interaction states
 - [x] **T22** Add sleep timer logic (5-min countdown, reset on `person_detected`)
 - [x] **T23** Add blink as independent overlay timer (not blocked by state changes)
 
 ### Phase 5 — Integration
 
-- [x] **T24** Implement MQTT client: subscribe to all topics, dispatch events to state machine; configure `reconnect_delay_set(1, 30)` for auto-reconnect
+- [x] **T24** Implement MQTT client: subscribe to all topics, validate payload objects, dispatch events, and configure reconnect backoff
 - [x] **T25** Implement MQTT publisher: emit `bmo/face/state` on transitions, `bmo/face/ready` on boot
 - [x] **T26** Implement REST API (`/state`, `/health`, `/brightness`) in `api.py`
 - [x] **T27** Run API in-process with a thread-safe event queue (no direct cross-thread state mutation)
-- [ ] **T28** Add SIGTERM handler: fade screen to black → `pygame.quit()` → `sys.exit(0)` in < 2s
+- [x] **T28** Add SIGTERM handler: fade to black, stop API/MQTT, and quit pygame cleanly
 
 ### Phase 6 — Ops
 
 - [x] **T29** Write `systemd` unit file: `bmo-face.service` (auto-start, restart on failure)
-- [x] **T30** Write install script: `scripts/install-face.sh` (venv setup + systemd enable)
+- [x] **T30** Write install script: `scripts/install-face.sh` (venv and dependency setup; systemd installation is documented separately)
 - [ ] **T31** Smoke test: boot device → BMO face appears → MQTT event changes state → verified
 - [ ] **T32** Memory profile: run for 1h → record baseline RSS and keep steady-state within baseline +20% (soft target ≤120MB)
 
@@ -431,17 +433,17 @@ psutil>=5.9.0      # Memory profiling
 ## Acceptance Criteria
 
 - [ ] BMO face renders fullscreen with target 30 FPS and fallback 24 FPS on Armbian (Amlogic S905X)
-- [x] All 15 states animate correctly and transition cleanly
+- [ ] All 15 base states animate correctly on target displays (automated state/draw tests pass; device visual acceptance pending)
 - [x] State priority ladder enforced: ALERT interrupts SPEAKING; SLEEP cannot interrupt THINKING
 - [x] `bmo/face/set_state` always bypasses coalescing (priority 6); can override SPEAKING/THINKING
 - [x] `set_state` forced SPEAKING has 15s safety timeout; never traps face permanently
 - [ ] MQTT event → state change latency < 100ms
 - [x] Blink overlay runs independently, never blocked by other states
 - [x] Sleep triggers exactly after 5 min of `PERSON_LEFT`; cancels on `PERSON_DETECTED`
-- [ ] Scale test: face proportions visually consistent at `320×240` and `1920×1080`
+- [ ] Scale test: face proportions visually consistent at `320×240` and `1920×1080` on target displays
 - [x] SPEAKING mouth syncs to amplitude envelope; falls back to 8 Hz if absent
 - [x] REST `/health` returns 200 when service is running
 - [ ] MQTT broker restart → face reconnects automatically within 30s
-- [ ] SIGTERM → clean exit (screen fades to black) in < 2s
+- [ ] SIGTERM → clean exit (screen fades to black) in < 2s on the Playbox
 - [ ] `bmo-face.service` survives a reboot (auto-starts)
 - [ ] bmo-face steady-state RSS after 1h stays within baseline +20% (soft target ≤120MB)

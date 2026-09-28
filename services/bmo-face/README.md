@@ -13,7 +13,10 @@
 - Reacts to MQTT events from other services (voice, camera, AI, notifications)
 - Exposes a **REST API** for direct state inspection and overrides
 - Targets **30 FPS** (fallback 24 FPS on constrained hardware)
+- Switches to fallback when measured FPS remains below 80% of target for 2 seconds
 - Scales to any resolution — works on a 3.2" LCD and a 27" monitor equally
+
+**Milestone status:** Software implementation and automated tests are in place. Mosquitto restart, systemd reboot, visual display acceptance, and the one-hour memory profile still need to be verified on the FPT Playbox.
 
 ---
 
@@ -21,6 +24,7 @@
 
 | State       | Visual                                      | Trigger                              |
 | ----------- | ------------------------------------------- | ------------------------------------ |
+| `boot`      | Flicker, eyes open, mouth fade-in           | Service startup                       |
 | `idle`      | Glow pulse + breathing pupils + blink       | Default / after all transitions      |
 | `happy`     | Smile `:)` + squinted eyes                  | `bmo/system/state {"emotion":"happy"}` |
 | `sad`       | Frown `:(` + blue tint + sad brows          | `bmo/voice/bt_disconnect`            |
@@ -35,7 +39,8 @@
 | `wake`      | Eyes open from sleep                        | Person detected while sleeping       |
 | `look_left` | Pupils shifted left                         | `bmo/camera/face_position {"x":<0.4}` |
 | `look_right`| Pupils shifted right                        | `bmo/camera/face_position {"x">0.6}` |
-| `blink`     | Brief eye close (overlay, any state)        | Random every 3–6 s                   |
+
+Blink is a 200 ms independent overlay (75 ms close, 50 ms hold, 75 ms open), not a base state. It runs every 3–6 seconds except during sleep.
 
 ---
 
@@ -47,13 +52,34 @@
 # Python 3.11+
 python3 --version
 
-# MQTT broker (required)
+# macOS: install and start the MQTT broker with Homebrew
+brew install mosquitto
+
+# Debian/Ubuntu (target device)
 sudo apt install mosquitto mosquitto-clients
 sudo systemctl enable --now mosquitto
+```
 
-# Verify broker
-mosquitto_pub -t test -m hello &
-mosquitto_sub -t test -C 1   # should print "hello"
+On macOS, if `$(brew --prefix)/etc/mosquitto/mosquitto.conf` does not exist, create it with these **local-only** settings before starting the service:
+
+```conf
+listener 1883 127.0.0.1
+allow_anonymous true
+```
+
+```bash
+brew services start mosquitto
+brew services info mosquitto
+```
+
+Verify the broker in two terminals:
+
+```bash
+# Terminal 1
+mosquitto_sub -t bmo/setup/test -C 1
+
+# Terminal 2
+mosquitto_pub -t bmo/setup/test -m hello
 ```
 
 ### Install
@@ -76,14 +102,15 @@ cd services/bmo-face
 .venv/bin/python main.py
 ```
 
-Service starts a pygame window and a Flask API on `http://127.0.0.1:5200`.
+Service starts a pygame window and a local REST API on `http://127.0.0.1:5200`.
 
-> **Tip:** Run MQTT broker first (`mosquitto -v` in another terminal), then start the face service.
+> **Tip:** Start Mosquitto before the face service. On macOS, use `brew services start mosquitto`; to stop it later, use `brew services stop mosquitto`.
 
 ### Run as systemd service (device)
 
 ```bash
-# Copy and enable
+# The unit expects the repository at /opt/bmo-ai-companion.
+# Adjust WorkingDirectory and ExecStart in the unit if installed elsewhere.
 sudo cp systemd/bmo-face.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now bmo-face
@@ -287,11 +314,11 @@ services/bmo-face/
 │   ├── colors.py         # Palette constants + ScaleContext (scale helper)
 │   ├── components.py     # build_face_layout() — geometry from screen size
 │   ├── animations.py     # Pure math helpers: glow, breathing, speaking waveform
-│   └── state_machine.py  # FaceStateMachine — 15 states, priority ladder, timers
+│   └── state_machine.py  # FaceStateMachine — 15 base states, priority ladder, timers
 ├── tests/
-│   ├── unit/             # State transitions, priority, sleep timer, scale math
-│   ├── component/        # Blink, look direction, emotion timeouts, speaking fallback
-│   └── integration/      # MQTT contract, REST API contract, queue plumbing
+│   ├── unit/             # Config/FPS, MQTT adapter, transitions, priority, scale, amplitude
+│   ├── component/        # Alert, blink, renderer geometry/state smoke tests
+│   └── integration/      # Graceful shutdown, REST API, event queue plumbing
 └── systemd/
     └── bmo-face.service  # systemd unit for auto-start on device
 ```
@@ -322,4 +349,4 @@ face:
 | Window doesn't open | Check `DISPLAY` env var is set; on Armbian: `export DISPLAY=:0` |
 | `set_state` has no effect | Check MQTT broker is running; face service logs for errors |
 | Stuck in speaking/thinking | Send `mosquitto_pub -t bmo/face/set_state -m '{"state":"idle"}'` — `set_state` always overrides |
-| Low FPS on device | Set `fps_target: 24` in `config/bmo.yaml` |
+| Low FPS on device | The service switches to `fps_fallback` after sustained low measured FPS; tune `fps_target`/`fps_fallback` in `config/bmo.yaml` if needed |

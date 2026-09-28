@@ -7,8 +7,9 @@ import signal
 import threading
 import time
 from queue import Empty, Queue
+from typing import Any, Callable
 
-from face.animations import idle_glow_alpha, pupil_breathe_scale, speaking_mouth_height
+from face.animations import idle_glow_alpha, pupil_breathe_scale, sample_amplitude, speaking_mouth_height
 from face.colors import (
     COLOR_ALERT,
     COLOR_BODY,
@@ -27,7 +28,7 @@ from face.state_machine import Event, FaceState, FaceStateMachine
 
 try:
     import pygame
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     pygame = None
 
 
@@ -62,15 +63,29 @@ class FaceRuntime:
         self._clock = None
         self._layout = None
         self._scale = None
+        self._shake_surface = None
         self._phase_start_ts = time.monotonic()
+        self._low_fps_since: float | None = None
 
     def set_fps_fallback(self) -> None:
         self.current_fps = self.fps_fallback
 
-    def set_publisher(self, publish_fn) -> None:
+    def update_fps_policy(self, measured_fps: float, now: float | None = None) -> None:
+        if self.fps_fallback >= self.fps_target or self.current_fps != self.fps_target:
+            return
+        now = self.now() if now is None else now
+        if measured_fps < self.fps_target * 0.8:
+            if self._low_fps_since is None:
+                self._low_fps_since = now
+            elif now - self._low_fps_since >= 2.0:
+                self.set_fps_fallback()
+        else:
+            self._low_fps_since = None
+
+    def set_publisher(self, publish_fn: Callable[[str, dict[str, Any]], None]) -> None:
         self.publisher = publish_fn
 
-    def dispatch(self, name: str, payload: dict):
+    def dispatch(self, name: str, payload: dict[str, Any]) -> None:
         with self._lock:
             prev_state = self.sm.state
             self.sm.handle_event(Event(name=name, payload=payload))
@@ -138,8 +153,12 @@ class FaceRuntime:
         self._clock = pygame.time.Clock()
         self._layout = build_face_layout(w, h)
         self._scale = ScaleContext(w, h)
+        self._shake_surface = pygame.Surface(self._screen.get_size()) if self._screen else None
         with self._lock:
-            self.sm.transition_boot_complete()
+            if self.sm.state == FaceState.BOOT:
+                now = self.now()
+                self.sm.boot_deadline = now + self.sm.boot_duration_seconds
+                self._phase_start_ts = now
 
     def _apply_brightness(self, color: tuple[int, int, int]) -> tuple[int, int, int]:
         level = 1.0 if self.brightness_override is None else max(0.0, min(1.0, self.brightness_override))
@@ -155,12 +174,30 @@ class FaceRuntime:
         t = now - self._start_ts
         state = self.current_state()
         s = self._scale
+        boot_elapsed = now - self._phase_start_ts if state == FaceState.BOOT else 0.0
+        output_screen = self._screen
+        if state == FaceState.STRESSED and self._shake_surface is not None:
+            self._screen = self._shake_surface
+
+        if state == FaceState.BOOT and boot_elapsed < 0.3:
+            self._screen.fill((0, 0, 0))
+            pygame.display.flip()
+            return
+        if state == FaceState.BOOT and boot_elapsed < 0.5:
+            flicker_elapsed = boot_elapsed - 0.3
+            color = (255, 255, 255) if int(flicker_elapsed / 0.1) % 2 == 0 and flicker_elapsed % 0.1 < 0.05 else (0, 0, 0)
+            self._screen.fill(color)
+            pygame.display.flip()
+            return
 
         body      = _hex_to_rgb(COLOR_BODY)
         screen_bg = _hex_to_rgb(COLOR_SCREEN_BG)
         eye_c     = _hex_to_rgb(COLOR_EYE)
         pupil_c   = _hex_to_rgb(COLOR_EYE_PUPIL)
         mouth_c   = _hex_to_rgb(COLOR_MOUTH)
+        eye_reveal = min(1.0, max(0.0, (boot_elapsed - 0.5) / 0.5)) if state == FaceState.BOOT else 1.0
+        mouth_reveal = min(1.0, max(0.0, (boot_elapsed - 1.0) / 0.3)) if state == FaceState.BOOT else 1.0
+        mouth_c = tuple(int(body[i] + (mouth_c[i] - body[i]) * mouth_reveal) for i in range(3))
 
         # ── Background (BMO body colour) ──
         self._screen.fill(self._apply_brightness(body))
@@ -173,8 +210,10 @@ class FaceRuntime:
 
         # ── Glow outline for idle / wake / listening ──
         if state in (FaceState.IDLE, FaceState.WAKE, FaceState.LOOK_LEFT,
-                     FaceState.LOOK_RIGHT, FaceState.LISTENING):
-            glow_alpha = max(60, min(255, idle_glow_alpha(t)))
+                     FaceState.LOOK_RIGHT, FaceState.LISTENING, FaceState.SLEEP):
+            glow_period = 8.0 if state == FaceState.SLEEP else 3.0
+            minimum_glow = 20 if state == FaceState.SLEEP else 60
+            glow_alpha = max(minimum_glow, min(255, idle_glow_alpha(t, glow_period)))
             glow_surf = pygame.Surface((sw + 4, sh + 4), pygame.SRCALPHA)
             g = _hex_to_rgb(COLOR_GLOW)
             pygame.draw.rect(glow_surf, (*g, glow_alpha), (0, 0, sw + 4, sh + 4),
@@ -184,10 +223,16 @@ class FaceRuntime:
         # ── Eyes (ellipses, height scaled per state) ──
         lx, ly, lw, lh = self._layout.left_eye_rect
         rx, ry, rw, rh = self._layout.right_eye_rect
+        draw_lw = max(1, int(lw * eye_reveal))
+        draw_rw = max(1, int(rw * eye_reveal))
+        draw_lx = lx + (lw - draw_lw) // 2
+        draw_rx = rx + (rw - draw_rw) // 2
 
         eye_scale_y = 1.0
         if state in (FaceState.SLEEP, FaceState.SAD, FaceState.HAPPY):
             eye_scale_y = 0.35          # squint / closed
+            if state == FaceState.SLEEP:
+                eye_scale_y = 0.32 + 0.04 * (0.5 + 0.5 * math.sin((2 * math.pi / 8.0) * t))
         elif state == FaceState.HOT:
             eye_scale_y = 0.7
         elif state in (FaceState.LISTENING, FaceState.ALERT):
@@ -196,7 +241,7 @@ class FaceRuntime:
             eye_scale_y = 1.2
 
         if self.sm.blink_active:
-            eye_scale_y = min(eye_scale_y, 0.12)
+            eye_scale_y = min(eye_scale_y, self.sm.blink_eye_scale)
 
         draw_lh = max(1, int(lh * eye_scale_y))
         draw_rh = max(1, int(rh * eye_scale_y))
@@ -204,16 +249,25 @@ class FaceRuntime:
         draw_ry = ry + (rh - draw_rh) // 2
 
         pygame.draw.ellipse(self._screen, self._apply_brightness(eye_c),
-                            (lx, draw_ly, lw, draw_lh))
+                            (draw_lx, draw_ly, draw_lw, draw_lh))
         pygame.draw.ellipse(self._screen, self._apply_brightness(eye_c),
-                            (rx, draw_ry, rw, draw_rh))
+                            (draw_rx, draw_ry, draw_rw, draw_rh))
 
         # ── Pupils ──
         pupil_offset_x = 0
+        pupil_offset_y = 0
+        if state in (FaceState.LOOK_LEFT, FaceState.LOOK_RIGHT):
+            look_progress = min(1.0, max(0.0, (now - self._phase_start_ts) / 0.2))
+            look_ease = look_progress * look_progress * (3.0 - 2.0 * look_progress)
+        else:
+            look_ease = 1.0
+        if state == FaceState.WAKE:
+            wake_progress = min(1.0, max(0.0, (now - self._phase_start_ts) / 0.45))
+            pupil_offset_y = -int(math.sin(math.pi * wake_progress) * s.scale(3))
         if state == FaceState.LOOK_LEFT:
-            pupil_offset_x = -s.scale(4)
+            pupil_offset_x = -int(s.scale(4) * look_ease)
         elif state == FaceState.LOOK_RIGHT:
-            pupil_offset_x = s.scale(4)
+            pupil_offset_x = int(s.scale(4) * look_ease)
         elif state == FaceState.THINKING:
             pupil_offset_x = int(math.sin((2 * math.pi / 0.8) * t) * s.scale(4))
         elif state == FaceState.WORRIED:
@@ -222,17 +276,22 @@ class FaceRuntime:
         if state == FaceState.STRESSED:
             # X eyes — two crossing lines inside each eye rect (😵)
             line_w = max(2, s.scale(2))
+            jitter = int(math.sin(t * 2 * math.pi * 20) * min(1, s.scale(1)))
             for (ex, ey_e, ew, eh) in [(lx, draw_ly, lw, draw_lh), (rx, draw_ry, rw, draw_rh)]:
                 pad = max(1, ew // 5)
                 pygame.draw.line(self._screen, self._apply_brightness(pupil_c),
-                                 (ex + pad, ey_e + pad), (ex + ew - pad, ey_e + eh - pad), line_w)
+                                 (ex + pad + jitter, ey_e + pad), (ex + ew - pad + jitter, ey_e + eh - pad), line_w)
                 pygame.draw.line(self._screen, self._apply_brightness(pupil_c),
-                                 (ex + ew - pad, ey_e + pad), (ex + pad, ey_e + eh - pad), line_w)
-        elif draw_lh > 3:
-            breathe = pupil_breathe_scale(t) if state in (FaceState.IDLE, FaceState.WAKE) else 1.0
+                                 (ex + ew - pad + jitter, ey_e + pad), (ex + pad + jitter, ey_e + eh - pad), line_w)
+        elif draw_lh > 3 and state != FaceState.SLEEP:
+            breathe = (
+                pupil_breathe_scale(t, 8.0 if state == FaceState.SLEEP else 3.0)
+                if state in (FaceState.IDLE, FaceState.WAKE, FaceState.SLEEP)
+                else 1.0
+            )
             p_r = max(1, int(s.scale(4) * breathe))
-            lpc = (lx + lw // 2 + pupil_offset_x, draw_ly + draw_lh // 2)
-            rpc = (rx + rw // 2 + pupil_offset_x, draw_ry + draw_rh // 2)
+            lpc = (draw_lx + draw_lw // 2 + pupil_offset_x, draw_ly + draw_lh // 2 + pupil_offset_y)
+            rpc = (draw_rx + draw_rw // 2 + pupil_offset_x, draw_ry + draw_rh // 2 + pupil_offset_y)
             pygame.draw.circle(self._screen, self._apply_brightness(pupil_c), lpc, p_r)
             pygame.draw.circle(self._screen, self._apply_brightness(pupil_c), rpc, p_r)
 
@@ -273,12 +332,17 @@ class FaceRuntime:
             pygame.draw.arc(self._screen, self._apply_brightness(mouth_c),
                             arc_rect, 0, math.pi, lw_m * 2)
         elif state == FaceState.SPEAKING:
-            # Animated oval — always uses 8 Hz fallback for visible oscillation
-            h = s.scale(speaking_mouth_height(None, t, base=5, dynamic=16))
+            elapsed = 0.0 if self.sm.speaking_started_at is None else now - self.sm.speaking_started_at
+            amplitude = sample_amplitude(
+                self.sm.speaking_amplitude,
+                self.sm.speaking_sample_rate_hz,
+                elapsed,
+            )
+            h = s.scale(speaking_mouth_height(amplitude, t, base=5, dynamic=16))
             oval_y = my_m + mh // 2 - h // 2
             pygame.draw.ellipse(self._screen, self._apply_brightness(mouth_c),
                                 (mx + s.scale(6), oval_y, mw - s.scale(12), max(s.scale(4), h)))
-        elif state in (FaceState.THINKING, FaceState.LISTENING):
+        elif state in (FaceState.THINKING, FaceState.LISTENING, FaceState.WORRIED):
             # Small open oval
             pygame.draw.ellipse(self._screen, self._apply_brightness(mouth_c),
                                 (mx + s.scale(8), my_m + s.scale(2), mw - s.scale(16), s.scale(8)))
@@ -321,18 +385,29 @@ class FaceRuntime:
             for ddx, ddy in [(sw - s.scale(14), s.scale(10)), (sw - s.scale(7), s.scale(22))]:
                 pygame.draw.circle(self._screen, (90, 170, 255), (sx + ddx, sy + ddy), drop_r)
 
+        elif state == FaceState.STRESSED:
+            tint = pygame.Surface((sw, sh), pygame.SRCALPHA)
+            r, g, b = _hex_to_rgb(COLOR_HOT_TINT)
+            tint.fill((r, g, b, 24))
+            self._screen.blit(tint, (sx, sy))
+
         elif state == FaceState.SAD:
             tint = pygame.Surface((sw, sh), pygame.SRCALPHA)
             r, g, b = _hex_to_rgb(COLOR_SAD_TINT)
             tint.fill((r, g, b, 40))
             self._screen.blit(tint, (sx, sy))
 
-        elif state == FaceState.SLEEP:
+        elif state in (FaceState.SLEEP, FaceState.WAKE):
             dim = pygame.Surface((sw, sh), pygame.SRCALPHA)
             r, g, b = _hex_to_rgb(COLOR_DIM)
-            dim.fill((r, g, b, 170))
-            self._screen.blit(dim, (sx, sy))
-            if pygame.font.get_init():
+            if state == FaceState.SLEEP:
+                dim_alpha = int(180 * min(1.0, max(0.0, (now - self._phase_start_ts) / 2.0)))
+            else:
+                dim_alpha = int(180 * (1.0 - min(1.0, max(0.0, (now - self._phase_start_ts) / 1.0))))
+            dim.fill((r, g, b, dim_alpha))
+            if dim_alpha:
+                self._screen.blit(dim, (sx, sy))
+            if state == FaceState.SLEEP and pygame.font.get_init():
                 for zx_off, zy_off, z_size in [
                     (sw - s.scale(28), s.scale(8),  s.scale(14)),
                     (sw - s.scale(18), s.scale(20), s.scale(11)),
@@ -373,37 +448,74 @@ class FaceRuntime:
                 self._screen.blit(box_surf, (box_x, box_y))
                 if title:
                     ft = pygame.font.Font(None, max(12, s.scale(14)))
+                    title = self._fit_text(ft, title, box_w - s.scale(8))
                     ts = ft.render(title, True, (255, 220, 80))
                     self._screen.blit(ts, (box_x + s.scale(4), box_y + s.scale(3)))
                 if message:
                     fm = pygame.font.Font(None, max(10, s.scale(12)))
+                    message = self._fit_text(fm, message, box_w - s.scale(8))
                     ms = fm.render(message, True, (210, 210, 210))
                     msg_y = box_y + (s.scale(20) if title else s.scale(4))
                     self._screen.blit(ms, (box_x + s.scale(4), msg_y))
 
+        if state == FaceState.STRESSED and self._shake_surface is not None:
+            self._screen = output_screen
+            self._screen.fill((0, 0, 0))
+            shake_x = int(math.sin(t * 2 * math.pi * 12) * s.scale(2))
+            self._screen.blit(self._shake_surface, (shake_x, 0))
+
         pygame.display.flip()
+
+    @staticmethod
+    def _fit_text(font, text: str, max_width: int) -> str:
+        if font.size(text)[0] <= max_width:
+            return text
+        suffix = "..."
+        clipped = text
+        while clipped and font.size(clipped + suffix)[0] > max_width:
+            clipped = clipped[:-1]
+        return clipped + suffix if clipped else ""
+
+    def _fade_to_black(self) -> None:
+        if not pygame or not pygame.display.get_init():
+            return
+        display = pygame.display.get_surface()
+        if display is None:
+            return
+        overlay = pygame.Surface(display.get_size()).convert()
+        overlay.fill((0, 0, 0))
+        for alpha in (64, 128, 192, 255):
+            overlay.set_alpha(alpha)
+            display.blit(overlay, (0, 0))
+            pygame.display.flip()
+            pygame.time.delay(25)
 
     def run(self) -> None:  # pragma: no cover
         self.running = True
-        self._init_pygame()
         frame_sleep = 1.0 / max(1, self.current_fps)
-        while self.running:
+        try:
+            self._init_pygame()
+            while self.running:
+                if pygame:
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            self.stop()
+                self.process_queue_once()
+                self.tick()
+                for evt in self.pop_publish_events():
+                    if self.publisher:
+                        self.publisher(evt["topic"], evt["payload"])
+                self._draw_face()
+                if self._clock:
+                    self._clock.tick(self.current_fps)
+                    self.update_fps_policy(self._clock.get_fps())
+                else:
+                    time.sleep(frame_sleep)
+        finally:
+            self.running = False
             if pygame:
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        self.stop()
-            self.process_queue_once()
-            self.tick()
-            for evt in self.pop_publish_events():
-                if self.publisher:
-                    self.publisher(evt["topic"], evt["payload"])
-            self._draw_face()
-            if self._clock:
-                self._clock.tick(self.current_fps)
-            else:
-                time.sleep(frame_sleep)
-        if pygame:
-            pygame.quit()
+                self._fade_to_black()
+                pygame.quit()
 
     def stop(self) -> None:
         self.running = False

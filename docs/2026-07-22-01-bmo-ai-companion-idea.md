@@ -10,6 +10,7 @@
 | Bluetooth Speaker | ✅      |
 | HDMI LCD          | ✅      |
 | Webcam            | ✅      |
+| Face Engine       | 🟡 Code implemented; target-device acceptance pending |
 
 ### Specs devices
 
@@ -84,6 +85,8 @@ bmo-ai-companion/
 
 # Milestone 2 - Face Engine
 
+**Status:** In progress. The `services/bmo-face` renderer, animations, state machine, MQTT client, REST API, systemd unit, and automated tests are implemented. Mosquitto/device operation, visual acceptance on both displays, reboot behavior, and the one-hour memory profile still need to be verified on the Playbox.
+
 ## Stack
 
 - Python 3.11+
@@ -92,16 +95,14 @@ bmo-ai-companion/
 
 ## Tasks
 
-- [ ] Fullscreen display (resolution-agnostic; scale helper for 320×240 ↔ 1920×1080)
-- [ ] 60 FPS renderer (30 FPS fallback if Mali-450 has no GPU driver on Armbian)
-- [ ] Idle animation
-- [ ] Blink animation (independent overlay, never blocked by state changes)
-- [ ] Look left/right (driven by camera face position)
-- [ ] Sleep / Wake (5-min no-presence timeout)
-- [ ] State machine (14 states with priority ladder)
-- [ ] Emotional states: happy, sad, stressed, hot, worried, alert
-- [ ] MQTT broker setup (Mosquitto — prerequisite for all services)
-- [ ] Graceful shutdown + MQTT auto-reconnect
+- [x] Fullscreen, resolution-agnostic rendering and `scale()` helper (code implemented; display validation pending)
+- [x] 30 FPS target with 24 FPS fallback after sustained low measured FPS
+- [x] Idle, blink overlay, look, sleep/wake, startup, and emotional animations
+- [x] Fifteen face states with priority handling; blink is an independent overlay
+- [x] MQTT event/publish adapter and reconnect backoff
+- [x] Local REST API and graceful process shutdown
+- [ ] Install/health-check Mosquitto on the Playbox and verify reconnect after broker restart
+- [ ] Run display, boot/reboot, latency, and one-hour memory acceptance checks on the Playbox
 
 Deliverable:
 Boot directly into a living BMO face.

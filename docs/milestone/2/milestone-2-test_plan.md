@@ -21,6 +21,14 @@ Test levels:
 
 Primary objective: prove M2 acceptance criteria before feature completion.
 
+**Latest local run:** 2026-09-28 — 39 automated tests passed. This does not complete M2: all checks in section 6.1 still require execution on the Playbox/displays.
+
+**macOS setup verification (2026-09-28):**
+- [x] Ran `scripts/install-face.sh`; the Python virtual environment and declared dependencies are installed.
+- [x] Homebrew Mosquitto is running with a loopback-only listener; local publish/subscribe passed.
+- [x] Headless service smoke test returned HTTP 200 from `/health`; an MQTT `set_state` event changed `/state`; the smoke-test process exited on SIGTERM.
+- [ ] Native-window visual acceptance on the Mac is not recorded. A separate `main.py` process was already using port 5200, so it was left untouched.
+
 ---
 
 ## 2. Test Suite Structure
@@ -30,27 +38,26 @@ Proposed suite layout:
 ```text
 services/bmo-face/tests/
 ├── unit/
+│   ├── test_config_fps_policy.py
+│   ├── test_fps_policy.py
+│   ├── test_mqtt_client.py
 │   ├── test_scale_helper.py
 │   ├── test_state_machine_transitions.py
 │   ├── test_state_priority.py
-│   ├── test_sleep_timer.py
-│   ├── test_event_coalescing.py
-│   ├── test_tts_amplitude_contract.py
-│   └── test_config_fps_policy.py
+│   └── test_tts_amplitude_contract.py
 ├── component/
-│   ├── test_idle_blink_overlay.py
-│   ├── test_look_direction_behavior.py
-│   ├── test_emotion_state_timeouts.py
 │   ├── test_alert_exit_behavior.py
-│   └── test_speaking_fallback_8hz.py
+│   ├── test_idle_blink_overlay.py
+│   └── test_renderer_draws_states.py
 ├── integration/
-│   ├── test_mqtt_subscribe_publish_contract.py
-│   ├── test_mqtt_reconnect_behavior.py
+│   ├── test_graceful_shutdown.py
 │   ├── test_rest_api_contract.py
-│   └── test_sigterm_graceful_shutdown.py
+│   └── test_runtime_queue_and_publish.py
 └── acceptance/
     └── manual-suite (in this file, section 6.1)
 ```
+
+The current suite tests MQTT reconnect configuration and adapter behavior without requiring a live broker. Broker restart, systemd boot, FPS/latency measurements, display quality, and memory stability remain device acceptance checks.
 
 ---
 
@@ -58,7 +65,7 @@ services/bmo-face/tests/
 
 - Python test runner: `pytest`
 - Time control: deterministic monotonic clock fixture
-- MQTT test broker: local Mosquitto test instance
+- MQTT adapter tests use a fake client; a live Mosquitto broker is required for device reconnect acceptance
 - Headless rendering mode for CI/local test runs
 - Device validation target: FPT Playbox S400 (Armbian)
 
@@ -280,6 +287,7 @@ Non-goals for automated tests:
 - `bmo/notify/event` → `{"title":"...","message":"...","priority":"low|medium|high"}`
 - `bmo/voice/bt_disconnect` → `{}`
 - `bmo/face/set_state` → `{"state":"<state_name>"}`
+- `bmo/face/brightness` → `{"level": 0.0..1.0}`
 
 ### Published topics
 - `bmo/face/state` → `{"state":"<state_name>"}`

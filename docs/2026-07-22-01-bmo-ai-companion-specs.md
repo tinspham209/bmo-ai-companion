@@ -56,7 +56,7 @@ bmo-ai-companion/
 
 ### 3.2 Inter-Service Communication
 
-- **Message bus:** MQTT (or Redis pub/sub) — all services publish and subscribe to events
+- **Message bus:** MQTT — all services publish and subscribe to events
 - Each service is **fully independent** and can be restarted without affecting others
 - Services expose a **local REST or WebSocket API** for direct queries
 
@@ -81,6 +81,7 @@ bmo-ai-companion/
 **Display:**
 - Fullscreen, resolution-agnostic (detects at runtime)
 - Targets 30 FPS (fallback 24 FPS on constrained hardware)
+- Falls back to 24 FPS after measured performance stays below 80% of the target for 2 seconds
 - Scales correctly from 27" dev monitor → 3.2" production LCD
 
 **Rendering approach:** Procedurally drawn (pygame vector shapes + transitions) — no external sprite assets required, scales to any resolution.
@@ -96,14 +97,15 @@ bmo-ai-companion/
 
 | State        | Description                                                            |
 | ------------ | ---------------------------------------------------------------------- |
+| `boot`       | Screen flicker, eyes open, mouth fades in, then settles into `idle`    |
 | `idle`       | Subtle breathing/glow loop                                             |
-| `blink`      | Random eye blink every 3–6s                                            |
 | `look_left`  | Eyes shift left (camera detects face left of center)                   |
 | `look_right` | Eyes shift right (camera detects face right of center)                 |
 | `sleep`      | Dims + slow breath; triggered after 5 min of no presence               |
 | `wake`       | Brightens; triggered by presence detected                              |
 | `happy`      | Upward curve mouth                                                     |
 | `thinking`   | Eyes scroll / loading indicator                                        |
+| `listening`  | Wide eyes and glow while waiting for speech recognition                |
 | `speaking`   | Mouth animates in sync with TTS                                        |
 | `sad`        | Drooping mouth, half-close eyes, blue tint; triggered by BT disconnect |
 | `stressed`   | Pupils vibrate, screen shake; triggered by CPU > 80%                   |
@@ -111,9 +113,11 @@ bmo-ai-companion/
 | `worried`    | Raised brows, eye dart; triggered by Disk < 500MB                      |
 | `alert`      | Wide eyes + `!` flash; triggered by high-priority notification         |
 
+Blink is an independent overlay, not a base state. It runs every 3–6 seconds for 200 ms in every state except `sleep`.
+
 **State machine:** Driven by MQTT events published by other services.
 
-**State priority ladder:** `ALERT(6) > SPEAKING(5) > THINKING(4) > Emotion/Look(3) > IDLE/WAKE(2) > SLEEP(1)`. Higher priority interrupts lower; during SPEAKING/THINKING, low-priority events are coalesced (keep latest) instead of fully queued.
+**State priority ladder:** `ALERT(6) > SPEAKING(5) > THINKING/LISTENING(4) > Emotion/Look(3) > IDLE/WAKE/BOOT(2) > SLEEP(1)`. Higher priority interrupts lower; during SPEAKING/THINKING/LISTENING, lower-priority events are coalesced (keep the latest event per topic) instead of fully queued. `bmo/face/set_state` is an explicit priority-6 override.
 
 **Alert exit rule:** `alert` returns to `idle` after timeout, except when it interrupts `speaking`, in which case it resumes `speaking`.
 
@@ -294,7 +298,7 @@ BMO displays high/medium notifications as face reactions + spoken announcements.
 | 16  | Conversation mode   | Multi-turn, 30s window             | Natural dialogue without re-triggering wake word   |
 | 17  | Notification queue  | Priority queue (high/med/low)      | Prevents interruption spam                         |
 | 18  | Config management   | Single shared bmo.yaml             | Simple, one source of truth per service            |
-| 19  | Face state count    | 14 states (9 original + 5 new)     | sad/stressed/hot/worried/alert needed for M4/M5/M7 |
+| 19  | Face state count    | 15 base states plus blink overlay  | Includes BOOT and LISTENING; blink is independently scheduled |
 | 20  | State priority      | Priority ladder 1–6 + coalescing   | Avoid interruption lag and event backlog           |
 | 21  | Scale helper        | `scale() = min(w,h)/240`           | Resolution-agnostic on 320×240 and 1920×1080       |
 | 22  | TTS amplitude       | `{amplitude:[],sample_rate_hz:10}` | Cross-service contract M5↔M2 for mouth sync        |
