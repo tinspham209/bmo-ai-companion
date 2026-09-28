@@ -111,15 +111,23 @@ Boot directly into a living BMO face.
 
 # Milestone 3 - Camera
 
-Status: Webcam working ✅
+**Status:** Camera service software is implemented and 51 automated tests pass. MacBook live presence/position/motion events, sleep analysis rate, and broker reconnect were verified; native visual/privacy checks and Aukey/Playbox acceptance remain pending. AVFoundation did not reduce native capture FPS in sleep.
+**Plan:** `docs/milestone/3/milestone-3-plan.md`
+**Test plan:** `docs/milestone/3/test-plan.md`
 
-Next:
+Software implementation:
 
-- [ ] OpenCV service
-- [ ] Face detection
-- [ ] Motion detection
-- [ ] Presence timeout
-- [ ] Publish events
+- [x] OpenCV capture and face/motion detection
+- [x] Presence timeout, face position, and MQTT events
+- [x] Sleep-rate handling, status API, and graceful shutdown
+
+Acceptance still pending:
+
+- [x] Grant macOS camera access and open the built-in camera; local API and face-position MQTT smoke checks pass
+- [x] Verify live MacBook presence, face-position, motion, and no-motion MQTT events
+- [x] Restart local Mosquitto and verify camera status and event publishing recover
+- [ ] Confirm visible face animation and inspect filesystem/log/network for image data
+- [ ] Test the Aukey webcam on the Playbox and complete FPS, systemd, privacy, and resource checks
 
 Events:
 - PERSON_DETECTED

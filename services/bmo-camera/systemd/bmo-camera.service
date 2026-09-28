@@ -1,0 +1,15 @@
+[Unit]
+Description=BMO Camera Service
+After=network-online.target mosquitto.service bmo-face.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/bmo-ai-companion/services/bmo-camera
+ExecStart=/opt/bmo-ai-companion/services/bmo-camera/.venv/bin/python main.py
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

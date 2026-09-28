@@ -8,3 +8,21 @@ face:
   mqtt_port: 1883
   api_port: 5200
 
+camera:
+  backend: auto
+  device_index: 0
+  active_fps: 30
+  sleep_fps: 5
+  analysis_width: 320
+  min_face_size: 24
+  face_absent_seconds: 10
+  face_position_max_hz: 5
+  face_position_min_delta: 0.05
+  face_position_heartbeat_seconds: 0.4
+  motion_threshold_ratio: 0.02
+  no_motion_timeout_seconds: 30
+  face_state_url: http://127.0.0.1:5200/state
+  face_state_timeout_seconds: 1
+  api_port: 5201
+  mqtt_broker: localhost
+  mqtt_port: 1883

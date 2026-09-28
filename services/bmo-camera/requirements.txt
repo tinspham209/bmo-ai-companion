@@ -1,0 +1,5 @@
+opencv-python-headless>=4.10.0.84,<5
+paho-mqtt>=2.0.0
+flask>=3.0.0
+pyyaml>=6.0.0
+pytest>=8.0.0
