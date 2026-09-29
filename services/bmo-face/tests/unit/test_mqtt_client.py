@@ -7,7 +7,8 @@ from mqtt_client import FaceMqttClient, SUB_TOPICS
 
 
 class FakeClient:
-    def __init__(self):
+    def __init__(self, callback_api_version):
+        self.callback_api_version = callback_api_version
         self.calls = []
         self.on_connect = None
         self.on_message = None
@@ -34,8 +35,15 @@ class FakeClient:
         self.calls.append(("publish", topic, payload))
 
 
+def _fake_paho():
+    return SimpleNamespace(
+        Client=FakeClient,
+        CallbackAPIVersion=SimpleNamespace(VERSION2=object()),
+    )
+
+
 def test_mqtt_client_subscribes_and_configures_reconnect(monkeypatch):
-    monkeypatch.setattr(mqtt_client, "mqtt", SimpleNamespace(Client=FakeClient))
+    monkeypatch.setattr(mqtt_client, "mqtt", _fake_paho())
     event_queue = Queue()
     adapter = FaceMqttClient("localhost", 1883, event_queue)
 
@@ -50,7 +58,7 @@ def test_mqtt_client_subscribes_and_configures_reconnect(monkeypatch):
 
 
 def test_mqtt_client_accepts_only_json_objects(caplog, monkeypatch):
-    monkeypatch.setattr(mqtt_client, "mqtt", SimpleNamespace(Client=FakeClient))
+    monkeypatch.setattr(mqtt_client, "mqtt", _fake_paho())
     event_queue = Queue()
     adapter = FaceMqttClient("localhost", 1883, event_queue)
 
@@ -70,15 +78,29 @@ def test_mqtt_client_accepts_only_json_objects(caplog, monkeypatch):
     assert "invalid payload" in caplog.text
 
 
+def test_mqtt_client_ignores_retained_state_tombstone(monkeypatch):
+    monkeypatch.setattr(mqtt_client, "mqtt", _fake_paho())
+    event_queue = Queue()
+    adapter = FaceMqttClient("localhost", 1883, event_queue)
+
+    adapter.client.on_message(
+        None,
+        None,
+        SimpleNamespace(topic="bmo/system/state", payload=b""),
+    )
+
+    assert event_queue.empty()
+
+
 def test_mqtt_publish_serializes_json(monkeypatch):
-    monkeypatch.setattr(mqtt_client, "mqtt", SimpleNamespace(Client=FakeClient))
+    monkeypatch.setattr(mqtt_client, "mqtt", _fake_paho())
     adapter = FaceMqttClient("localhost", 1883, Queue())
     adapter.publish("bmo/face/state", {"state": "idle"})
     assert ("publish", "bmo/face/state", json.dumps({"state": "idle"})) in adapter.client.calls
 
 
 def test_mqtt_stop_disconnects_before_stopping_loop(monkeypatch):
-    monkeypatch.setattr(mqtt_client, "mqtt", SimpleNamespace(Client=FakeClient))
+    monkeypatch.setattr(mqtt_client, "mqtt", _fake_paho())
     adapter = FaceMqttClient("localhost", 1883, Queue())
     adapter.stop()
     assert adapter.client.calls[-2:] == [("disconnect",), ("loop_stop",)]

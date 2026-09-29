@@ -91,7 +91,7 @@ class FaceMqttClient:
         self.broker = broker
         self.port = port
         self.event_queue = event_queue
-        self.client = mqtt.Client()
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.client.reconnect_delay_set(min_delay=1, max_delay=30)
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
@@ -101,6 +101,8 @@ class FaceMqttClient:
             client.subscribe(topic)
 
     def _on_message(self, client, userdata, msg):  # pragma: no cover
+        if not msg.payload:
+            return
         try:
             payload = json.loads(msg.payload.decode("utf-8")) if msg.payload else {}
         except (UnicodeDecodeError, json.JSONDecodeError):

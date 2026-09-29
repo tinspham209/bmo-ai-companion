@@ -26,3 +26,15 @@ camera:
   api_port: 5201
   mqtt_broker: localhost
   mqtt_port: 1883
+
+monitor:
+  sample_interval_seconds: 5
+  emotion_reassert_interval_seconds: 2
+  cpu_stress_percent: 80
+  temperature_hot_c: 70
+  disk_worried_free_bytes: 500000000
+  disk_path: /
+  api_port: 5202
+  mqtt_broker: localhost
+  mqtt_port: 1883
+  wifi_interface: auto
